@@ -1,0 +1,440 @@
+package com.eb.obd2.views
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import com.eb.obd2.models.RenderStatus
+import com.eb.obd2.services.PluginService
+import com.eb.obd2.services.DrivingScenarioSimulator
+import com.eb.obd2.viewmodels.OBDViewModel
+import com.eb.obd2.viewmodels.PluginViewModel
+import com.eb.obd2.views.components.ComprehensiveDashboard
+import com.eb.obd2.views.components.DataRecordingPanel
+import com.eb.obd2.views.components.DrivingAnalysisPanel
+import com.eb.obd2.views.components.EmulatorControlPanel
+import com.eb.obd2.views.components.ErrorScreen
+import com.eb.obd2.views.components.HistoricalDataDisplay
+import com.eb.obd2.views.components.LoadingScreen
+import com.eb.obd2.views.components.ScoreGraph
+import com.eb.obd2.views.components.SimulationControlPanel
+import com.eb.obd2.views.components.StyleIndicator
+import com.eb.obd2.views.components.VehicleStatusMonitor
+import com.eb.obd2.views.components.WarningNotificationsPanel
+import com.eb.obd2.views.plugins.PluginDashboardScreen
+import com.eb.obd2.views.plugins.PluginDetailScreen
+import com.eb.obd2.views.plugins.PluginListScreen
+import com.eb.obd2.views.screens.ProfilesScreen
+import com.eb.obd2.views.components.ScenarioSelectionPanel
+import javax.inject.Inject
+
+// Navigation route constants
+sealed class Screen(val route: String, val title: String, val icon: @Composable () -> Unit) {
+    object Dashboard : Screen(
+        route = "dashboard",
+        title = "Dashboard",
+        icon = { Icon(Icons.Filled.DirectionsCar, contentDescription = null) }
+    )
+    
+    object Analysis : Screen(
+        route = "analysis",
+        title = "Analysis",
+        icon = { Icon(imageVector = Icons.Default.Assessment, contentDescription = null) }
+    )
+    
+    object Plugins : Screen(
+        route = "plugins",
+        title = "Plugins",
+        icon = { Icon(Icons.Filled.Extension, contentDescription = null) }
+    )
+    
+    object Profiles : Screen(
+        route = "profiles",
+        title = "Profiles",
+        icon = { Icon(Icons.Filled.AccountCircle, contentDescription = null) }
+    )
+    
+    object Settings : Screen(
+        route = "settings",
+        title = "Settings",
+        icon = { Icon(Icons.Filled.Settings, contentDescription = null) }
+    )
+    
+    companion object {
+        val items = listOf(Dashboard, Analysis, Plugins, Profiles, Settings)
+    }
+}
+
+@Composable
+fun App(
+    viewModel: OBDViewModel = hiltViewModel()
+) {
+    val navController = rememberNavController()
+    
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentDestination = navBackStackEntry?.destination
+                
+                Screen.items.forEach { screen ->
+                    NavigationBarItem(
+                        icon = { screen.icon() },
+                        label = { Text(screen.title) },
+                        selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
+                        onClick = {
+                            navController.navigate(screen.route) {
+                                // Pop up to the start destination of the graph to
+                                // avoid building up a large stack of destinations
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
+                                // Avoid multiple copies of the same destination when
+                                // reselecting the same item
+                                launchSingleTop = true
+                                // Restore state when reselecting a previously selected item
+                                restoreState = true
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    ) { innerPadding ->
+        NavHost(
+            navController = navController,
+            startDestination = Screen.Dashboard.route,
+            modifier = Modifier.padding(innerPadding)
+        ) {
+            composable(Screen.Dashboard.route) {
+                when (viewModel.status) {
+                    RenderStatus.LOADING -> LoadingScreen()
+                    RenderStatus.ERROR -> ErrorScreen()
+                    RenderStatus.SUCCESS -> DashboardScreen(viewModel)
+                }
+            }
+            
+            composable(Screen.Analysis.route) {
+                AnalysisScreen(viewModel)
+            }
+            
+            composable(Screen.Plugins.route) {
+                val pluginViewModel: PluginViewModel = hiltViewModel()
+                PluginListScreen(
+                    navController = navController,
+                    viewModel = pluginViewModel
+                )
+            }
+            
+            composable(
+                route = "plugins/{pluginId}",
+                arguments = listOf(navArgument("pluginId") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val pluginId = backStackEntry.arguments?.getString("pluginId") ?: return@composable
+                val pluginViewModel: PluginViewModel = hiltViewModel()
+                PluginDetailScreen(
+                    navController = navController,
+                    pluginId = pluginId,
+                    viewModel = pluginViewModel
+                )
+            }
+            
+            composable(
+                route = "plugins/dashboard/{pluginId}",
+                arguments = listOf(navArgument("pluginId") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val pluginId = backStackEntry.arguments?.getString("pluginId") ?: return@composable
+                val pluginViewModel: PluginViewModel = hiltViewModel()
+                
+                PluginDashboardScreen(
+                    navController = navController,
+                    viewModel = pluginViewModel,
+                    pluginService = pluginViewModel.getPluginService()
+                )
+            }
+            
+            composable(Screen.Profiles.route) {
+                ProfilesScreen(viewModel)
+            }
+            
+            composable(Screen.Settings.route) {
+                SettingsScreen(viewModel, scenarioSimulator = hiltViewModel())
+            }
+        }
+    }
+}
+
+@Composable
+fun DashboardScreen(viewModel: OBDViewModel) {
+    var showDebug by remember { mutableStateOf(false) }
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(8.dp)
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Active Warnings Section - Only show if there are warnings
+        if (viewModel.activeWarnings.isNotEmpty()) {
+            WarningNotificationsPanel(
+                warnings = viewModel.activeWarnings,
+                onDismissWarning = { viewModel.dismissWarning(it) },
+                onAcknowledgeAll = { viewModel.dismissAllWarnings() },
+                modifier = Modifier.fillMaxWidth()
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+        
+        // Comprehensive Dashboard
+        ComprehensiveDashboard(
+            rpm = viewModel.rpm,
+            engineTemperature = viewModel.engineTemperature,
+            fuelLevel = viewModel.fuelLevel,
+            fuelConsumptionRate = viewModel.fuelConsumptionRate,
+            averageConsumption = viewModel.averageFuelConsumption,
+            estimatedRange = viewModel.estimatedRange,
+            speedKmh = viewModel.speed,
+            throttlePosition = viewModel.throttlePosition,
+            brakePosition = viewModel.brakePosition,
+            currentGear = viewModel.currentGear,
+            gearPosition = viewModel.gearPosition,
+            modifier = Modifier.fillMaxWidth()
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Improved Driving Style Indicator
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            StyleIndicator(
+                aggressiveScore = viewModel.aggressiveScores.last(),
+                comfortLevel = viewModel.comfortLevel,
+                accelerationScore = viewModel.accelerationScore,
+                decelerationScore = viewModel.decelerationScore,
+                corneringScore = viewModel.corneringScore,
+                engineEfficiencyScore = viewModel.engineEfficiencyScore,
+                drivingState = viewModel.drivingState,
+                modifier = Modifier.padding(8.dp)
+            )
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Vehicle Status Monitor
+        VehicleStatusMonitor(
+            engineStatus = viewModel.engineSystemStatus,
+            transmissionStatus = viewModel.transmissionSystemStatus,
+            fuelSystemStatus = viewModel.fuelSystemStatus,
+            emissionSystemStatus = viewModel.emissionSystemStatus,
+            brakeSystemStatus = viewModel.brakeSystemStatus,
+            batteryStatus = viewModel.batterySystemStatus,
+            engineTemperature = viewModel.engineTemperature,
+            batteryVoltage = viewModel.batteryVoltage,
+            oilPressure = viewModel.oilPressure,
+            fuelLevel = viewModel.fuelLevel,
+            engineDetails = viewModel.engineSystemDetails,
+            transmissionDetails = viewModel.transmissionSystemDetails,
+            fuelSystemDetails = viewModel.fuelSystemDetails,
+            emissionSystemDetails = viewModel.emissionSystemDetails,
+            brakeSystemDetails = viewModel.brakeSystemDetails,
+            batteryDetails = viewModel.batterySystemDetails
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Debug Info Button
+        Button(
+            onClick = { showDebug = true },
+            modifier = Modifier.fillMaxWidth()
+        ) { 
+            Text("Show Debug Info") 
+        }
+        
+        if (showDebug) {
+            DebugInfo(viewModel) { showDebug = false }
+        }
+    }
+}
+
+@Composable
+fun SettingsScreen(
+    viewModel: OBDViewModel,
+    scenarioSimulator: DrivingScenarioSimulator
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Settings",
+            style = MaterialTheme.typography.headlineMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Scenario Selection Panel
+        ScenarioSelectionPanel(
+            scenarioSimulator = scenarioSimulator,
+            modifier = Modifier.fillMaxWidth()
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Emulator Control Panel
+        EmulatorControlPanel(
+            viewModel = viewModel,
+            modifier = Modifier.fillMaxWidth()
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Data Recording Panel
+        DataRecordingPanel(
+            viewModel = viewModel,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
+fun DebugInfo(viewModel: OBDViewModel, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = MaterialTheme.shapes.medium) {
+            Column(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .fillMaxWidth()
+            ) {
+                LazyColumn {
+                    items(viewModel.obdData.toList()) { (key, value) ->
+                        Text(
+                            "$key: ${value.lastOrNull()?.value ?: "N/A"} ${value.lastOrNull()?.unit ?: ""}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Comfort Level: ${viewModel.comfortLevel}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Aggressive Driving State: ${viewModel.drivingState}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(onClick = onDismiss) {
+                    Text("Close")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Screen for data analysis, driving metrics, and historical data visualization
+ */
+@Composable
+fun AnalysisScreen(viewModel: OBDViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(8.dp)
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Enhanced Driving Analysis Panel
+        DrivingAnalysisPanel(
+            overallScore = viewModel.overallDrivingScore,
+            efficiencyScore = viewModel.efficiencyScore,
+            smoothnessScore = viewModel.smoothnessScore,
+            aggressivenessScore = 1.0f - viewModel.aggressiveScores.last().coerceIn(0f, 1f),
+            comfortScore = viewModel.comfortLevel,
+            modifier = Modifier.fillMaxWidth()
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Detailed Driving Style Information
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            StyleIndicator(
+                aggressiveScore = viewModel.aggressiveScores.last(),
+                comfortLevel = viewModel.comfortLevel,
+                accelerationScore = viewModel.accelerationScore,
+                decelerationScore = viewModel.decelerationScore,
+                corneringScore = viewModel.corneringScore,
+                engineEfficiencyScore = viewModel.engineEfficiencyScore,
+                drivingState = viewModel.drivingState,
+                modifier = Modifier.padding(8.dp)
+            )
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        // Historical Data Display
+        HistoricalDataDisplay(
+            temperatureModelProducer = viewModel.temperatureModelProducer,
+            fuelConsumptionModelProducer = viewModel.consumptionModelProducer,
+            fuelLevelModelProducer = viewModel.fuelLevelModelProducer,
+            speedModelProducer = viewModel.speedModelProducer,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
